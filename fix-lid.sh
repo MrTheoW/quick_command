@@ -1,16 +1,22 @@
 #!/bin/bash
-# Shorten URL is: https://is.gd/fix_lid
+# Shorten URL is: https://is.gd
+# run as: bash <(curl -sSL https://is.gd/fix_lid)
+
+# Color codes for clean terminal output
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # No Color
+
+# Track if any changes were actually made
+CHANGES_MADE=false
 
 # Error check: ensure the script is run with root (sudo) privileges
-# Check if the script is run as root
 if [ "$EUID" -ne 0 ]; then
   echo "⚠️  This script requires administrator privileges (sudo)."
   read -p "Do you want to elevate to sudo? (y/N): " response
   
-  # Convert response to lowercase and check it
   if [[ "$response" =~ ^[Yy]$ ]]; then
     echo "🔑 Elevating privileges... Please enter your password if prompted."
-    # Restart the script with sudo, passing the exact same arguments
     exec sudo bash "$0" "$@"
   else
     echo "❌ Execution cancelled. Root privileges are required."
@@ -19,9 +25,39 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo "🚀 Running with root privileges now!"
+echo ""
+echo "⚙️  Starting configuration updates..."
+echo ""
 
-# These changes are made so closing the lid will NOT let the laptop go to sleep.
-sed -i 's/#HandleLidSwitch=suspend/HandleLidSwitch=ignore/' /etc/systemd/logind.conf
-sed -i 's/#HandleLidSwitchExternalPower=suspend/HandleLidSwitchExternalPower=ignore/' /etc/systemd/logind.conf
-sed -i 's/#HandleLidSwitchDocked=ignore/HandleLidSwitchDocked=ignore/' /etc/systemd/logind.conf
-systemctl restart systemd-logind.service
+# --- Function to update and report status ---
+update_config() {
+  local step=$1
+  local key=$2
+  
+  # Check if the line is already correctly set (no hashtag, ends with ignore)
+  if grep -q "^${key}=ignore" /etc/systemd/logind.conf; then
+    echo -e "📝 [$step/4] $key... ${GREEN}[UNCHANGED]${NC}"
+  else
+    # Perform the update
+    sed -i "s/^#\?${key}=.*/${key}=ignore/" /etc/systemd/logind.conf
+    echo -e "📝 [$step/4] $key... ${YELLOW}[UPDATED]${NC}"
+    CHANGES_MADE=true
+  fi
+}
+
+# Run the checks and updates
+update_config "1" "HandleLidSwitch"
+update_config "2" "HandleLidSwitchExternalPower"
+update_config "3" "HandleLidSwitchDocked"
+
+# Step 4: Restart the service ONLY if changes were made
+if [ "$CHANGES_MADE" = true ]; then
+  echo "🔄 [4/4] Restarting systemd-logind service to apply changes..."
+  systemctl restart systemd-logind.service
+  echo ""
+  echo -e "${YELLOW}✅ Done! All changes have been processed successfully.${NC}"
+else
+  echo -e "⏭️  [4/4] Skipping service restart... No modifications needed."
+  echo ""
+  echo -e "${GREEN}✅ Done! No changes were made.${NC}"
+fi
