@@ -2,82 +2,107 @@
 # Shorten URL is: https://is.gd
 # run as: bash <(curl -sSL https://is.gd/fix_lid)
 
-# Color codes for clean terminal output
+# Kleuren voor nette statusupdates
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+BLUE='\033[0;36m'
+NC='\033[0;0m' # No Color
 
-# Track if any changes were actually made
-CHANGES_MADE=false
+CONFIG_FILE="/etc/systemd/logind.conf"
+SETTINGS=("HandleLidSwitch" "HandleLidSwitchExternalPower" "HandleLidSwitchDocked")
+CHANGED=false
 
-# Error check: ensure the script is run with root (sudo) privileges
+echo -e "${BLUE}[INFO] Script gestart voor het optimaliseren van logind.conf...${NC}"
+
+# Controleer of sudo beschikbaar is (indien niet uitgevoerd als root)
 if [ "$EUID" -ne 0 ]; then
-  echo "⚠️  This script requires administrator privileges (sudo)."
-  read -p "Do you want to elevate to sudo? (y/N): " response
-  
-  if [[ "$response" =~ ^[Yy]$ ]]; then
-    echo "🔑 Elevating privileges... Please enter your password if prompted."
-    exec sudo bash "$0" "$@"
-  else
-    echo "❌ Execution cancelled. Root privileges are required."
-    exit 1
-  fi
+    if ! command -v sudo &> /dev/null; then
+        echo -e "${RED}[ERROR] Dit script vereist root-rechten, maar 'sudo' is niet geïnstalleerd.${NC}"
+        exit 1
+    fi
+    echo -e "${YELLOW}[NOTICE] Dit script heeft incidenteel sudo-rechten nodig voor systeemaanpassingen.${NC}"
+    # Preroll sudo check zodat de gebruiker direct zijn wachtwoord invoert indien nodig
+    sudo -v || exit 1
 fi
 
-echo "🚀 Running with root privileges now!"
-echo ""
-echo "⚙️  Starting configuration updates..."
-echo ""
-
-# --- Function to update and report status ---
-update_config() {
-  local step=$1
-  local key=$2
-  
-  # Check if the line is already correctly set (no hashtag, ends with ignore)
-  if grep -q "^${key}=ignore" /etc/systemd/logind.conf; then
-    echo -e "📝 [$step/4] $key... ${GREEN}[UNCHANGED]${NC}"
-  else
-    # Perform the update
-    sed -i "s/^#\?${key}=.*/${key}=ignore/" /etc/systemd/logind.conf
-    echo -e "📝 [$step/4] $key... ${YELLOW}[UPDATED]${NC}"
-    CHANGES_MADE=true
-  fi
+# Functie om op te treden met sudo indien nodig
+run_as_root() {
+    if [ "$EUID" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
 }
 
-# Run the checks and updates
-update_config "1" "HandleLidSwitch"
-update_config "2" "HandleLidSwitchExternalPower"
-update_config "3" "HandleLidSwitchDocked"
+# 1. Controleer en update de instellingen naar 'ignore'
+for setting in "${SETTINGS[@]}"; do
+    # Controleer of de instelling al exact op 'ignore' staat (en niet is uitgecommentarieerd)
+    if grep -q "^${setting}=ignore" "$CONFIG_FILE"; then
+        echo -e "${GREEN}[UNCHANGED]${NC} ${setting} staat al op 'ignore'."
+    else
+        echo -e "${YELLOW}[UPDATING]${NC} Aanpassen van ${setting} naar 'ignore'..."
+        
+        # Als de instelling uitgecommentarieerd is (#HandleLidSwitch=...), vervang deze.
+        # Anders, als hij al bestaat met een andere waarde, overschrijf deze.
+        # Als hij helemaal niet bestaat, voeg hem toe aan het einde van de [Login] sectie.
+        if grep -q "^#${setting}=" "$CONFIG_FILE"; then
+            run_as_root sed -i "s/^#${setting}=.*/${setting}=ignore/" "$CONFIG_FILE"
+        elif grep -q "^${setting}=" "$CONFIG_FILE"; then
+            run_as_root sed -i "s/^${setting}=.*/${setting}=ignore/" "$CONFIG_FILE"
+        else
+            run_as_root sed -i "/^\[Login\]/a ${setting}=ignore" "$CONFIG_FILE"
+        fi
+        
+        CHANGED=true
+        echo -e "${GREEN}[UPDATED]${NC} ${setting} is succesvol aangepast."
+    fi
+done
 
-# Step 4: Final logic based on changes
-if [ "$CHANGES_MADE" = true ]; then
-  echo "🔄 [4/4] Restarting systemd-logind service to apply changes..."
-  systemctl restart systemd-logind.service
-  echo ""
-  echo -e "${YELLOW}✅ Done! All changes have been processed successfully.${NC}"
+# 2. Afhandeling op basis van wijzigingen
+if [ "$CHANGED" = true ]; then
+    echo -e "${BLUE}[INFO] Wijzigingen gedetecteerd. Herstarten van systemd-logind service...${NC}"
+    if run_as_root systemctl restart systemd-logind; then
+        echo -e "${GREEN}[SUCCESS] Systeeminstellingen zijn succesvol toegepast!${NC}"
+    else
+        echo -e "${RED}[ERROR] Fout bij het herstarten van systemd-logind.${NC}"
+        exit 1
+    fi
 else
-  echo -e "⏭️  [4/4] Skipping service restart... No modifications needed."
-  echo ""
-  echo -e "${GREEN}💡 No changes were made (settings are already on ignore).${NC}"
-  echo ""
-  
-  # Ask user if they want to revert to stock factory defaults
-  read -p "🔄 Do you want to restore the default Linux settings? (y/N): " revert_response
-  if [[ "$revert_response" =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "⚙️  Restoring stock logind.conf defaults..."
+    echo -e "${BLUE}[INFO] Geen wijzigingen nodig. Alles staat al optimaal ingesteld.${NC}"
     
-    # Revert to standard systemd defaults
-    sed -i 's/^#\?HandleLidSwitch=.*/HandleLidSwitch=suspend/' /etc/systemd/logind.conf
-    sed -i 's/^#\?HandleLidSwitchExternalPower=.*/#HandleLidSwitchExternalPower=suspend/' /etc/systemd/logind.conf
-    sed -i 's/^#\?HandleLidSwitchDocked=.*/#HandleLidSwitchDocked=ignore/' /etc/systemd/logind.conf
+    # INTERACTIEVE PROMPT FIX: We lezen direct uit /dev/tty om cURL-pijpen niet te verstoren
+    echo -n -e "${YELLOW}[PROMPT] Wil je de instellingen terugrollen naar de fabrieksinstellingen? (y/N): ${NC}"
+    read -r response < /dev/tty
     
-    echo "🔄 Restarting systemd-logind service to apply defaults..."
-    systemctl restart systemd-logind.service
-    echo ""
-    echo -e "${YELLOW}✅ Done! Successfully reverted to original stock settings.${NC}"
-  else
-    echo "❌ Revert cancelled. Keeping current settings."
-  fi
+    # Converteer invoer naar kleine letters
+    response=$(echo "$response" | tr '[:upper:]' '[:lower:]')
+    
+    if [[ "$response" == "y" || "$response" == "yes" ]]; then
+        echo -e "${BLUE}[INFO] Terugdraaien naar fabrieksinstellingen (uitcommentariëren)...${NC}"
+        
+        ROLLBACK_CHANGED=false
+        for setting in "${SETTINGS[@]}"; do
+            # Als de regel actief is (niet begint met #), zet er dan een # voor en herstel eventueel naar een standaardwaarde (optioneel, suspend is vaak default)
+            if grep -q "^${setting}=" "$CONFIG_FILE"; then
+                echo -e "${YELLOW}[ROLLBACK]${NC} Uitcommentariëren van ${setting}..."
+                run_as_root sed -i "s/^${setting}=.*/#${setting}=suspend/" "$CONFIG_FILE"
+                ROLLBACK_CHANGED=true
+            fi
+        done
+        
+        if [ "$ROLLBACK_CHANGED" = true ]; then
+            echo -e "${BLUE}[INFO] Herstarten van systemd-logind service voor rollback...${NC}"
+            if run_as_root systemctl restart systemd-logind; then
+                echo -e "${GREEN}[SUCCESS] Fabrieksinstellingen succesvol hersteld!${NC}"
+            else
+                echo -e "${RED}[ERROR] Fout bij het herstarten van systemd-logind tijdens rollback.${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${GREEN}[UNCHANGED]${NC} Er waren geen actieve aangepaste instellingen om terug te draaien."
+        fi
+    else
+        echo -e "${BLUE}[INFO] Rollback geannuleerd. Script beëindigd.${NC}"
+    fi
 fi
