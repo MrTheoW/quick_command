@@ -50,7 +50,7 @@ update_config "1" "HandleLidSwitch"
 update_config "2" "HandleLidSwitchExternalPower"
 update_config "3" "HandleLidSwitchDocked"
 
-# Step 4: Restart the service ONLY if changes were made
+# Step 4: Final logic based on changes
 if [ "$CHANGES_MADE" = true ]; then
   echo "🔄 [4/4] Restarting systemd-logind service to apply changes..."
   systemctl restart systemd-logind.service
@@ -59,5 +59,25 @@ if [ "$CHANGES_MADE" = true ]; then
 else
   echo -e "⏭️  [4/4] Skipping service restart... No modifications needed."
   echo ""
-  echo -e "${GREEN}✅ Done! No changes were made.${NC}"
+  echo -e "${GREEN}💡 No changes were made (settings are already on ignore).${NC}"
+  echo ""
+  
+  # Ask user if they want to revert to stock factory defaults
+  read -p "🔄 Do you want to restore the default Linux settings? (y/N): " revert_response
+  if [[ "$revert_response" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "⚙️  Restoring stock logind.conf defaults..."
+    
+    # Revert to standard systemd defaults
+    sed -i 's/^#\?HandleLidSwitch=.*/HandleLidSwitch=suspend/' /etc/systemd/logind.conf
+    sed -i 's/^#\?HandleLidSwitchExternalPower=.*/#HandleLidSwitchExternalPower=suspend/' /etc/systemd/logind.conf
+    sed -i 's/^#\?HandleLidSwitchDocked=.*/#HandleLidSwitchDocked=ignore/' /etc/systemd/logind.conf
+    
+    echo "🔄 Restarting systemd-logind service to apply defaults..."
+    systemctl restart systemd-logind.service
+    echo ""
+    echo -e "${YELLOW}✅ Done! Successfully reverted to original stock settings.${NC}"
+  else
+    echo "❌ Revert cancelled. Keeping current settings."
+  fi
 fi
